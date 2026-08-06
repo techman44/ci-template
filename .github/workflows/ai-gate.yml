@@ -1,0 +1,35 @@
+# Shared gate called at the end of both AI review workflows.
+# Whichever review finishes second sees both verdict labels and pulls the trigger.
+# (Label events from GITHUB_TOKEN don't re-trigger workflows, so the gate has to
+# live inside the review workflows rather than listening for `labeled`.)
+name: AI Gate
+
+on:
+  workflow_call:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Approve + enable auto-merge when both AIs sign off
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          labels=$(gh pr view "$PR" --repo "$REPO" --json labels --jq '.labels[].name')
+          if ! grep -qx 'ai:claude-approved' <<<"$labels" || ! grep -qx 'ai:codex-approved' <<<"$labels"; then
+            echo "Not approving — verdict labels so far: $(tr '\n' ' ' <<<"$labels")"
+            exit 0
+          fi
+          already=$(gh pr view "$PR" --repo "$REPO" --json latestReviews \
+            --jq '[.latestReviews[] | select(.author.login == "github-actions" and .state == "APPROVED")] | length')
+          if [ "$already" = "0" ]; then
+            gh pr review "$PR" --repo "$REPO" --approve \
+              --body "✅ Auto-approved: Claude and Codex both signed off."
+          fi
+          gh pr merge "$PR" --repo "$REPO" --auto --squash \
+            || echo "::notice::Auto-merge unavailable (needs branch protection + auto-merge enabled) — PR approved only."

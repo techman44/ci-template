@@ -1,0 +1,97 @@
+name: Codex Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+concurrency:
+  group: codex-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # Strip stale verdict labels immediately so the gate can't act on an
+  # approval that belongs to an older commit.
+  reset:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Clear previous Codex verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr edit ${{ github.event.pull_request.number }} --repo ${{ github.repository }} \
+            --remove-label "ai:codex-approved" --remove-label "ai:codex-changes-requested" || true
+
+  # Codex runs read-only and can't touch the GitHub token or post anything;
+  # the verdict job below does the posting.
+  review:
+    needs: reset
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      result: ${{ steps.codex.outputs.final-message }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Write PR diff for Codex
+        run: git diff "origin/${{ github.event.pull_request.base.ref }}...HEAD" > pr-diff.txt
+
+      - id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: .github/codex/review-prompt.md
+          output-schema-file: .github/codex/review-output-schema.json
+          safety-strategy: read-only
+
+  verdict:
+    needs: review
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Post Codex verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ needs.review.outputs.result }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          verdict=$(jq -r '.verdict // empty' <<<"$RESULT")
+          if [ -z "$verdict" ]; then
+            echo "::error::Codex returned no structured verdict"
+            exit 1
+          fi
+          {
+            echo "## 🤖 Codex review — ${verdict//_/ }"
+            echo
+            jq -r '.summary' <<<"$RESULT"
+            count=$(jq '.issues | length' <<<"$RESULT")
+            if [ "$count" -gt 0 ]; then
+              echo
+              echo "### Issues"
+              jq -r '.issues[] | "- \(.)"' <<<"$RESULT"
+            fi
+          } > body.md
+          gh pr comment "$PR" --repo "$REPO" --body-file body.md
+          if [ "$verdict" = "approve" ]; then
+            gh pr edit "$PR" --repo "$REPO" --add-label "ai:codex-approved"
+          else
+            gh pr edit "$PR" --repo "$REPO" --add-label "ai:codex-changes-requested"
+          fi
+
+  gate:
+    needs: verdict
+    uses: ./.github/workflows/ai-gate.yml
+    permissions:
+      contents: write
+      pull-requests: write
