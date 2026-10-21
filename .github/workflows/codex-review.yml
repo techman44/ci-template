@@ -13,7 +13,7 @@ jobs:
   # approval that belongs to an older commit.
   reset:
     if: ${{ !github.event.pull_request.draft }}
-    runs-on: ubuntu-latest
+    runs-on: pips-lxc
     permissions:
       pull-requests: write
       issues: write
@@ -29,7 +29,7 @@ jobs:
   # the verdict job below does the posting.
   review:
     needs: reset
-    runs-on: ubuntu-latest
+    runs-on: pips-lxc
     permissions:
       contents: read
     outputs:
@@ -54,7 +54,7 @@ jobs:
 
   verdict:
     needs: review
-    runs-on: ubuntu-latest
+    runs-on: pips-lxc
     permissions:
       pull-requests: write
       issues: write
