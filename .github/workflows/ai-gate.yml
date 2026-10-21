@@ -9,7 +9,7 @@ on:
 
 jobs:
   gate:
-    runs-on: ubuntu-latest
+    runs-on: pips-lxc
     permissions:
       contents: write
       pull-requests: write
